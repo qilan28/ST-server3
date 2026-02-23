@@ -322,21 +322,25 @@ export const startInstance = async (username, originalPort, stDir, dataDir) => {
                 const startConfig = {
                     name: `st-${username}`,
                     script: stServerPath,
-                    args: `--port ${port} --dataRoot ${dataDir}`,
+                    args: [`--port=${port}`, `--dataRoot=${dataDir}`, '--listen'], // 使用数组格式的参数
                     cwd: stDir,
                     interpreter: nodePath, // 使用完整路径
                     env: {
                         NODE_ENV: 'production',
-                        PORT: port.toString()
+                        PORT: port.toString(),
+                        ST_DATA_ROOT: dataDir,
+                        ST_PORT: port.toString()
                     },
                     max_memory_restart: '500M',
                     error_file: path.join(__dirname, 'logs', `${username}-error.log`),
                     out_file: path.join(__dirname, 'logs', `${username}-out.log`),
                     time: true,
-                    autorestart: true,
-                    restart_delay: 3000, // 重启延迟
-                    kill_timeout: 5000,  // 等待进程退出的时间
-                    wait_ready: false    // 不等待ready信号
+                    autorestart: false,    // 先关闭自动重启，避免启动失败时无限重启
+                    restart_delay: 5000,   // 重启延迟增加到5秒
+                    kill_timeout: 8000,    // 等待进程退出的时间增加到8秒
+                    wait_ready: false,     // 不等待ready信号
+                    min_uptime: '10s',     // 最小运行时间10秒
+                    max_restarts: 3        // 最大重启次数3次
                 };
                 
                 // 记录完整的启动配置
@@ -369,18 +373,42 @@ export const startInstance = async (username, originalPort, stDir, dataDir) => {
                         // 不要立即断开连接，先检查实例状态
                         setTimeout(() => {
                             pm2.describe(`st-${username}`, (descErr, procDesc) => {
-                                disconnectPM2();
-                                
                                 if (descErr || !procDesc || procDesc.length === 0) {
                                     console.warn(`[Instance] 无法验证实例启动状态: ${descErr?.message}`);
-                                } else {
-                                    const proc = procDesc[0];
-                                    console.log(`[Instance] 实例状态检查: ${proc.pm2_env.status}, 进程ID: ${proc.pid}`);
+                                    disconnectPM2();
+                                    resolve({ apps, port });
+                                    return;
                                 }
                                 
+                                const proc = procDesc[0];
+                                console.log(`[Instance] 实例状态检查: ${proc.pm2_env.status}, 进程ID: ${proc.pid}`);
+                                
+                                // 如果实例已停止，记录错误信息并更新状态
+                                if (proc.pm2_env.status === 'stopped' || proc.pm2_env.status === 'errored') {
+                                    console.error(`[Instance] 警告: 实例 ${username} 启动后立即停止`);
+                                    console.error(`[Instance] 错误状态: ${proc.pm2_env.status}`);
+                                    console.error(`[Instance] 重启次数: ${proc.pm2_env.restart_time}`);
+                                    
+                                    // 更新数据库状态为停止
+                                    updateUserStatus(username, 'stopped');
+                                    
+                                    // 检查日志文件获取错误信息
+                                    checkInstanceLogs(username).then(logInfo => {
+                                        if (logInfo.hasErrors) {
+                                            console.error(`[Instance] 发现错误日志:`);
+                                            logInfo.errors.forEach(error => {
+                                                console.error(`[Instance]   - ${error}`);
+                                            });
+                                        }
+                                    }).catch(logErr => {
+                                        console.warn(`[Instance] 无法检查日志: ${logErr.message}`);
+                                    });
+                                }
+                                
+                                disconnectPM2();
                                 resolve({ apps, port });
                             });
-                        }, 2000);
+                        }, 3000); // 增加到3秒，给SillyTavern更多启动时间
                     }
                 });
             });
@@ -737,6 +765,68 @@ export const listAllInstances = async () => {
             }
         });
     });
+};
+
+// 检查实例日志获取错误信息
+const checkInstanceLogs = async (username) => {
+    const errorLogPath = path.join(__dirname, 'logs', `${username}-error.log`);
+    const outLogPath = path.join(__dirname, 'logs', `${username}-out.log`);
+    
+    const result = {
+        hasErrors: false,
+        errors: []
+    };
+    
+    try {
+        // 检查错误日志
+        if (fs.existsSync(errorLogPath)) {
+            const errorContent = fs.readFileSync(errorLogPath, 'utf-8');
+            const errorLines = errorContent.split('\n')
+                .filter(line => line.trim())
+                .slice(-20); // 只看最后20行
+            
+            const criticalErrors = errorLines.filter(line => 
+                line.includes('Error:') || 
+                line.includes('ERROR') ||
+                line.includes('EADDRINUSE') ||
+                line.includes('EACCES') ||
+                line.includes('Cannot find module') ||
+                line.includes('SyntaxError') ||
+                line.includes('ReferenceError')
+            );
+            
+            if (criticalErrors.length > 0) {
+                result.hasErrors = true;
+                result.errors.push(...criticalErrors);
+            }
+        }
+        
+        // 检查输出日志中的错误
+        if (fs.existsSync(outLogPath)) {
+            const outContent = fs.readFileSync(outLogPath, 'utf-8');
+            const outLines = outContent.split('\n')
+                .filter(line => line.trim())
+                .slice(-30); // 只看最后30行
+            
+            const criticalErrors = outLines.filter(line => 
+                line.includes('Error:') ||
+                line.includes('EADDRINUSE') ||
+                line.includes('EACCES') ||
+                line.includes('Cannot find module') ||
+                line.includes('port') && line.includes('already in use') ||
+                line.includes('Failed to start')
+            );
+            
+            if (criticalErrors.length > 0) {
+                result.hasErrors = true;
+                result.errors.push(...criticalErrors);
+            }
+        }
+    } catch (error) {
+        console.warn(`[Instance] 检查日志文件时出错: ${error.message}`);
+    }
+    
+    return result;
 };
 
 // 获取日志内容
