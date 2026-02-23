@@ -565,6 +565,9 @@ async function handleStart() {
     startBtn.textContent = '启动中...';
     console.log('[Instance] 开始调用启动实例 API');
     
+    // 清除之前的错误消息
+    showMessage('正在启动实例，请稍候...', 'info');
+    
     try {
         // 使用测试请求验证服务器连接
         const pingResponse = await fetch('/api/health');
@@ -578,6 +581,8 @@ async function handleStart() {
         }
 
         console.log('[Instance] 发送启动实例请求...');
+        showMessage('连接到实例管理服务，正在启动...', 'info');
+        
         // 直接使用 fetch 而不是 apiRequest 以获得更低级的错误控制
         const response = await fetch(`${API_BASE}/instance/start`, {
             method: 'POST',
@@ -585,8 +590,8 @@ async function handleStart() {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
             },
-            // 设置超时
-            signal: AbortSignal.timeout(10000)
+            // 增加超时时间以适应更长的启动时间
+            signal: AbortSignal.timeout(25000)
         });
         
         if (!response) {
@@ -599,9 +604,9 @@ async function handleStart() {
         if (response.ok) {
             // 检查是否返回了端口信息
             if (data.portChanged && data.port) {
-                showMessage(`实例启动成功！端口已变更为: ${data.port}`, 'success');
+                showMessage(`实例启动成功！端口已变更为: ${data.port}，正在验证状态...`, 'success');
             } else {
-                showMessage('实例启动成功！', 'success');
+                showMessage('实例启动成功！正在验证状态...', 'success');
             }
             console.log('[Instance] 启动成功，刷新用户信息和状态');
             
@@ -611,6 +616,15 @@ async function handleStart() {
             // 开始快速状态检查（每秒1次，检查5次）
             await loadUserInfo();
             startFastStatusCheck();
+            
+            // 3秒后清除状态验证消息
+            setTimeout(() => {
+                if (data.portChanged && data.port) {
+                    showMessage(`实例已成功启动，端口: ${data.port}`, 'success');
+                } else {
+                    showMessage('实例已成功启动！', 'success');
+                }
+            }, 3000);
         } else {
             console.error('[Instance] 启动失败:', data);
             
@@ -630,11 +644,33 @@ async function handleStart() {
                 }
             }
             
-            showMessage(data.error || '启动失败，服务器返回错误');
+            // 根据不同类型的错误提供更具体的建议
+            let errorMsg = data.error || '启动失败，服务器返回错误';
+            if (data.error && data.error.includes('PM2')) {
+                errorMsg += ' • 建议：稍后重试或联系管理员';
+            } else if (data.error && data.error.includes('端口')) {
+                errorMsg += ' • 建议：稍后重试或重启服务器';
+            } else if (data.error && data.error.includes('timeout')) {
+                errorMsg += ' • 建议：检查网络连接后重试';
+            }
+            showMessage(errorMsg);
         }
     } catch (error) {
         console.error('[Instance] 启动实例异常:', error);
-        showMessage('启动失败: ' + error.message);
+        
+        // 根据错误类型提供不同的提示
+        let errorMessage = '启动失败: ';
+        if (error.name === 'AbortError' || error.message.includes('timeout')) {
+            errorMessage += '请求超时，请检查网络连接或稍后重试';
+        } else if (error.message.includes('网络') || error.message.includes('network')) {
+            errorMessage += '网络连接异常，请检查网络设置';
+        } else if (error.message.includes('认证') || error.message.includes('auth')) {
+            errorMessage += '身份验证失败，请重新登录';
+        } else {
+            errorMessage += error.message + ' • 如问题持续，请联系管理员';
+        }
+        
+        showMessage(errorMessage);
     } finally {
         startBtn.disabled = false;
         startBtn.textContent = '▶️ 启动实例';
@@ -721,6 +757,8 @@ async function handleRestart() {
         }
 
         console.log('[Instance] 发送重启实例请求...');
+        showMessage('正在重启实例，请稍候...', 'info');
+        
         // 直接使用 fetch 而不是 apiRequest
         const response = await fetch(`${API_BASE}/instance/restart`, {
             method: 'POST',
@@ -728,8 +766,8 @@ async function handleRestart() {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
             },
-            // 设置更长的超时，因为重启需要更长时间
-            signal: AbortSignal.timeout(15000)
+            // 增加超时时间以适应重启操作
+            signal: AbortSignal.timeout(30000)
         });
         
         console.log('[Instance] 重启API响应状态:', response.status);
@@ -742,13 +780,22 @@ async function handleRestart() {
         if (response.ok) {
             // 检查是否返回了端口信息
             if (data.portChanged && data.port) {
-                showMessage(`实例重启成功！端口已变更为: ${data.port}`, 'success');
+                showMessage(`实例重启成功！端口已变更为: ${data.port}，正在验证状态...`, 'success');
             } else {
-                showMessage('实例重启成功！', 'success');
+                showMessage('实例重启成功！正在验证状态...', 'success');
             }
             console.log('[Instance] 重启成功，刷新用户信息和状态');
             await loadUserInfo();
             await loadInstanceStatus();
+            
+            // 3秒后更新最终状态消息
+            setTimeout(() => {
+                if (data.portChanged && data.port) {
+                    showMessage(`实例已成功重启，端口: ${data.port}`, 'success');
+                } else {
+                    showMessage('实例已成功重启！', 'success');
+                }
+            }, 3000);
         } else {
             console.error('[Instance] 重启失败:', data);
             
@@ -772,7 +819,20 @@ async function handleRestart() {
         }
     } catch (error) {
         console.error('[Instance] 重启实例异常:', error);
-        showMessage('重启失败: ' + error.message);
+        
+        // 根据错误类型提供不同的提示
+        let errorMessage = '重启失败: ';
+        if (error.name === 'AbortError' || error.message.includes('timeout')) {
+            errorMessage += '操作超时，重启可能需要更长时间，请稍后检查状态';
+        } else if (error.message.includes('网络') || error.message.includes('network')) {
+            errorMessage += '网络连接异常，请检查网络设置';
+        } else if (error.message.includes('认证') || error.message.includes('auth')) {
+            errorMessage += '身份验证失败，请重新登录';
+        } else {
+            errorMessage += error.message + ' • 如问题持续，请联系管理员';
+        }
+        
+        showMessage(errorMessage);
     } finally {
         restartBtn.disabled = false;
         restartBtn.textContent = '🔄 重启实例';

@@ -33,11 +33,12 @@ const connectPM2 = () => {
             // 如果之前断开连接但标志未重置，强制重设
             pm2Connected = false;
             
-            // 使用超时保护
+            // 使用更长的超时保护
             const timeoutId = setTimeout(() => {
                 console.error('[PM2] 连接超时');
+                pm2Connected = false;
                 reject(new Error('PM2 connection timeout'));
-            }, 5000);
+            }, 10000);
             
             // console.log('[PM2] 尝试连接到 PM2...');
             try {
@@ -132,7 +133,7 @@ export const startInstance = async (username, originalPort, stDir, dataDir) => {
     
     // 启动尝试次数
     let startAttempts = 0;
-    const maxStartAttempts = 2;
+    const maxStartAttempts = 3;
     
     while (startAttempts <= maxStartAttempts) {
         startAttempts++;
@@ -156,10 +157,27 @@ export const startInstance = async (username, originalPort, stDir, dataDir) => {
                 throw new Error(`Failed to connect to PM2: ${error.message}`);
             }
             
-            // 获取随机可用端口
-            console.log(`[Instance] 为用户 ${username} 分配随机端口...`);
-            const port = await getSafeRandomPort(originalPort, 3001, 9000);
-            console.log(`[Instance] 用户 ${username} 分配到端口: ${port} (原端口: ${originalPort})`);
+            // 获取随机可用端口，增加重试机制
+            console.log(`[Instance] 为用户 ${username} 分配端口...`);
+            let port;
+            let portAttempts = 0;
+            const maxPortAttempts = 5;
+            
+            while (portAttempts < maxPortAttempts) {
+                try {
+                    port = await getSafeRandomPort(originalPort, 3001, 9000);
+                    console.log(`[Instance] 用户 ${username} 分配到端口: ${port} (原端口: ${originalPort})`);
+                    break;
+                } catch (portError) {
+                    portAttempts++;
+                    console.warn(`[Instance] 端口分配失败 (尝试 ${portAttempts}/${maxPortAttempts}): ${portError.message}`);
+                    if (portAttempts >= maxPortAttempts) {
+                        throw new Error(`无法分配可用端口: ${portError.message}`);
+                    }
+                    // 等待1秒后重试
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
             
             // 更新数据库中的端口
             if (port !== originalPort) {
@@ -295,9 +313,10 @@ export const startInstance = async (username, originalPort, stDir, dataDir) => {
                 
                 // 使用超时保护
                 const timeoutId = setTimeout(() => {
+                    console.error(`[Instance] PM2 启动操作超时，用户: ${username}`);
                     disconnectPM2();
                     reject(new Error('PM2 start operation timed out'));
-                }, 15000); // 增加到15秒超时
+                }, 20000); // 增加到20秒超时
                 
                 // 构建启动配置
                 const startConfig = {
@@ -331,12 +350,15 @@ export const startInstance = async (username, originalPort, stDir, dataDir) => {
                         console.error(`[Instance] 启动实例 ${username} 失败:`, err);
                         disconnectPM2();
                         
-                        if (startAttempts <= maxStartAttempts) {
-                            console.log(`[Instance] 启动失败，将在下一次循环重试`);
-                            reject(err);
-                        } else {
-                            reject(err);
-                        }
+                        // 启动失败，记录详细错误信息
+                        console.error(`[Instance] PM2启动失败详情:`, {
+                            username: username,
+                            attempt: startAttempts,
+                            maxAttempts: maxStartAttempts + 1,
+                            errorMessage: err.message,
+                            errorCode: err.code
+                        });
+                        reject(err);
                     } else {
                         console.log(`[Instance] 成功启动实例 ${username}`);
                         // 更新状态并记录启动时间
