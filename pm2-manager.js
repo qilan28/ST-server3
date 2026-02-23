@@ -241,23 +241,6 @@ export const startInstance = async (username, originalPort, stDir, dataDir) => {
                             await execPromise(`nginx -c "${configPath}"`);
                             console.log(`[Instance] Nginx 已使用正确配置启动`);
                         } catch (startError) {
-                            console.warn(`[Instance] Nginx 配置加载警告: ${startError.message}`);
-                        }
-                    }
-                } catch (nginxError) {
-                    console.warn(`[Instance] Nginx 操作警告:`, nginxError.message);
-                }
-            }
-            
-            // 创建数据目录（如果不存在）
-            if (!fs.existsSync(dataDir)) {
-                fs.mkdirSync(dataDir, { recursive: true });
-                console.log(`[Instance] 创建数据目录: ${dataDir}`);
-                
-                // 设置数据目录权限
-                try {
-                    fs.chmodSync(dataDir, 0o755);
-                } catch (chmodError) {
                     console.warn(`[Instance] 设置数据目录权限失败: ${chmodError.message}`);
                 }
             }
