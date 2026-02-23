@@ -241,8 +241,30 @@ export const startInstance = async (username, originalPort, stDir, dataDir) => {
                             await execPromise(`nginx -c "${configPath}"`);
                             console.log(`[Instance] Nginx 已使用正确配置启动`);
                         } catch (startError) {
-                    console.warn(`[Instance] 设置数据目录权限失败: ${chmodError.message}`);
+                            console.error(`[Instance] Nginx 启动失败: ${startError.message}`);
+                        }
+                    }
+                } catch (nginxError) {
+                    console.warn(`[Instance] Nginx 配置失败: ${nginxError.message}`);
                 }
+            }
+            
+            // 创建数据目录并设置权限
+            try {
+                fs.mkdirSync(dataDir, { recursive: true });
+                console.log(`[Instance] 数据目录创建成功: ${dataDir}`);
+                
+                // 在Windows上尝试设置目录权限
+                if (process.platform === 'win32') {
+                    try {
+                        await execPromise(`icacls "${dataDir}" /grant Everyone:(OI)(CI)F`);
+                        console.log(`[Instance] 设置数据目录权限成功`);
+                    } catch (chmodError) {
+                        console.warn(`[Instance] 设置数据目录权限失败: ${chmodError.message}`);
+                    }
+                }
+            } catch (mkdirError) {
+                console.warn(`[Instance] 创建数据目录失败: ${mkdirError.message}`);
             }
             
             // 确保SillyTavern所需的关键子目录都存在
